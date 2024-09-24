@@ -271,7 +271,7 @@ use std::sync::Arc;
 ///     // Verify that the value has been updated correctly.
 ///     assert_eq!(DB.get(key).await, new_value);
 ///
-///     // Undo any modificattion.
+///     // Undo any modification.
 ///     DB.delete(key).await;
 ///
 ///     // Drop permit. This allows the other test to start running.
