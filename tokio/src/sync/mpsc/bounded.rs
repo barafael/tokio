@@ -1666,6 +1666,48 @@ impl<T> WeakSender<T> {
         chan::Tx::upgrade(self.chan.clone()).map(Sender::new)
     }
 
+    /// Attempts to immediately send a message on this `WeakSender`.
+    ///
+    /// This is equivalent to calling [`upgrade`] followed by
+    /// [`Sender::try_send`] on the upgraded sender, but in a single step.
+    ///
+    /// If the upgrade fails because all [`Sender`] instances have been
+    /// dropped, the channel is closed and `Err(`[`TrySendError::Closed`]`)`
+    /// is returned. Otherwise the result is that of [`Sender::try_send`]:
+    /// `Err(`[`TrySendError::Full`]`)` if the channel has no capacity, and
+    /// `Err(`[`TrySendError::Closed`]`)` if the receive half has been closed
+    /// or dropped. The error includes the value passed to `try_send`.
+    ///
+    /// [`upgrade`]: WeakSender::upgrade
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tokio::sync::mpsc::{self, error::TrySendError};
+    ///
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() {
+    /// let (tx, mut rx) = mpsc::channel(1);
+    /// let tx_weak = tx.downgrade();
+    ///
+    /// // The strong sender is still alive, so this sends.
+    /// tx_weak.try_send(1).unwrap();
+    /// assert_eq!(rx.recv().await, Some(1));
+    ///
+    /// drop(tx);
+    ///
+    /// // All strong senders are gone, so the channel is closed.
+    /// assert!(matches!(tx_weak.try_send(2), Err(TrySendError::Closed(2))));
+    /// assert_eq!(rx.recv().await, None);
+    /// # }
+    /// ```
+    pub fn try_send(&self, message: T) -> Result<(), TrySendError<T>> {
+        match self.upgrade() {
+            Some(tx) => tx.try_send(message),
+            None => Err(TrySendError::Closed(message)),
+        }
+    }
+
     /// Returns the number of [`Sender`] handles.
     pub fn strong_count(&self) -> usize {
         self.chan.strong_count()

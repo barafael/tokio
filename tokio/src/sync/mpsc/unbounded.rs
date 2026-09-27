@@ -708,6 +708,48 @@ impl<T> WeakUnboundedSender<T> {
         chan::Tx::upgrade(self.chan.clone()).map(UnboundedSender::new)
     }
 
+    /// Attempts to send a message on this `WeakUnboundedSender` without
+    /// blocking.
+    ///
+    /// This is equivalent to calling [`upgrade`] followed by
+    /// [`UnboundedSender::send`] on the upgraded sender, but in a single step.
+    ///
+    /// If the upgrade fails because all [`UnboundedSender`] instances have
+    /// been dropped, the channel is closed and an error is returned. Otherwise
+    /// the result is that of [`UnboundedSender::send`], which fails if the
+    /// receive half has been closed or dropped. The error includes the value
+    /// passed to `send`.
+    ///
+    /// [`upgrade`]: WeakUnboundedSender::upgrade
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tokio::sync::mpsc;
+    ///
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() {
+    /// let (tx, mut rx) = mpsc::unbounded_channel();
+    /// let tx_weak = tx.downgrade();
+    ///
+    /// // The strong sender is still alive, so this sends.
+    /// tx_weak.send(1).unwrap();
+    /// assert_eq!(rx.recv().await, Some(1));
+    ///
+    /// drop(tx);
+    ///
+    /// // All strong senders are gone, so the channel is closed.
+    /// assert!(tx_weak.send(2).is_err());
+    /// assert_eq!(rx.recv().await, None);
+    /// # }
+    /// ```
+    pub fn send(&self, message: T) -> Result<(), SendError<T>> {
+        match self.upgrade() {
+            Some(tx) => tx.send(message),
+            None => Err(SendError(message)),
+        }
+    }
+
     /// Returns the number of [`UnboundedSender`] handles.
     pub fn strong_count(&self) -> usize {
         self.chan.strong_count()
