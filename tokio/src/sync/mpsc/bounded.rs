@@ -31,9 +31,13 @@ pub struct Sender<T> {
 /// In order to send messages, the `WeakSender` needs to be upgraded using
 /// [`WeakSender::upgrade`], which returns `Option<Sender>`. It returns `None`
 /// if all `Sender`s have been dropped, and otherwise it returns a `Sender`.
+/// [`WeakSender::send`] and [`WeakSender::try_send`] combine the upgrade and
+/// the send into a single call.
 ///
 /// [`Sender`]: Sender
 /// [`WeakSender::upgrade`]: WeakSender::upgrade
+/// [`WeakSender::send`]: WeakSender::send
+/// [`WeakSender::try_send`]: WeakSender::try_send
 ///
 /// # Examples
 ///
@@ -1664,6 +1668,108 @@ impl<T> WeakSender<T> {
     /// previously dropped, otherwise `None` is returned.
     pub fn upgrade(&self) -> Option<Sender<T>> {
         chan::Tx::upgrade(self.chan.clone()).map(Sender::new)
+    }
+
+    /// Sends a value, waiting until there is capacity.
+    ///
+    /// This is a shorthand for [`upgrade`] followed by [`Sender::send`] on the
+    /// upgraded sender. The upgraded `Sender` is held until the send
+    /// completes, so the channel stays open while this future is pending even
+    /// if every other `Sender` is dropped in the meantime.
+    ///
+    /// # Errors
+    ///
+    /// If all `Sender` instances have been dropped, the channel is closed and
+    /// the upgrade fails, so the function returns an error. It also returns an
+    /// error if the receive half of the channel is closed, either due to
+    /// [`close`] being called or the [`Receiver`] handle dropping. The error
+    /// includes the value passed to `send`.
+    ///
+    /// [`upgrade`]: WeakSender::upgrade
+    /// [`close`]: Receiver::close
+    /// [`Receiver`]: Receiver
+    ///
+    /// # Cancel safety
+    ///
+    /// If `send` is used as a branch in [`tokio::select!`](crate::select) and
+    /// another branch completes first, then it is guaranteed that the message
+    /// was not sent. **However, in that case, the message is dropped and will
+    /// be lost.** See [`Sender::send`] for details.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tokio::sync::mpsc;
+    ///
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() {
+    /// let (tx, mut rx) = mpsc::channel(1);
+    /// let tx_weak = tx.downgrade();
+    ///
+    /// // The strong sender is still alive, so this sends.
+    /// tx_weak.send(1).await.unwrap();
+    /// assert_eq!(rx.recv().await, Some(1));
+    ///
+    /// drop(tx);
+    ///
+    /// // All strong senders are gone, so the channel is closed.
+    /// assert!(tx_weak.send(2).await.is_err());
+    /// assert_eq!(rx.recv().await, None);
+    /// # }
+    /// ```
+    pub async fn send(&self, value: T) -> Result<(), SendError<T>> {
+        match self.upgrade() {
+            Some(tx) => tx.send(value).await,
+            None => Err(SendError(value)),
+        }
+    }
+
+    /// Attempts to immediately send a message on this `WeakSender`.
+    ///
+    /// This is a shorthand for [`upgrade`] followed by [`Sender::try_send`] on
+    /// the upgraded sender.
+    ///
+    /// # Errors
+    ///
+    /// If all `Sender` instances have been dropped, the channel is closed and
+    /// the upgrade fails, so [`TrySendError::Closed`] is returned. The same
+    /// error is returned if the receive half of the channel is closed, either
+    /// due to [`close`] being called or the [`Receiver`] handle dropping.
+    ///
+    /// If the channel capacity has been reached, [`TrySendError::Full`] is
+    /// returned.
+    ///
+    /// The error includes the value passed to `try_send`.
+    ///
+    /// [`upgrade`]: WeakSender::upgrade
+    /// [`close`]: Receiver::close
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tokio::sync::mpsc::{self, error::TrySendError};
+    ///
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() {
+    /// let (tx, mut rx) = mpsc::channel(1);
+    /// let tx_weak = tx.downgrade();
+    ///
+    /// // The strong sender is still alive, so this sends.
+    /// tx_weak.try_send(1).unwrap();
+    /// assert_eq!(rx.recv().await, Some(1));
+    ///
+    /// drop(tx);
+    ///
+    /// // All strong senders are gone, so the channel is closed.
+    /// assert!(matches!(tx_weak.try_send(2), Err(TrySendError::Closed(2))));
+    /// assert_eq!(rx.recv().await, None);
+    /// # }
+    /// ```
+    pub fn try_send(&self, message: T) -> Result<(), TrySendError<T>> {
+        match self.upgrade() {
+            Some(tx) => tx.try_send(message),
+            None => Err(TrySendError::Closed(message)),
+        }
     }
 
     /// Returns the number of [`Sender`] handles.

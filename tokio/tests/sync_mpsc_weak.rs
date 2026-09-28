@@ -686,3 +686,146 @@ async fn unbounded_sender_strong_and_weak_conut() {
     assert_eq!(weak.weak_count(), 1);
     assert_eq!(rx.sender_weak_count(), 1);
 }
+
+// Tests that `WeakSender::try_send` sends while a `Sender` is alive and does
+// not affect the strong count afterwards.
+#[tokio::test]
+async fn weak_sender_try_send_success() {
+    let (tx, mut rx) = channel::<i32>(1);
+    let weak_tx = tx.downgrade();
+
+    assert!(weak_tx.try_send(1).is_ok());
+    assert_eq!(weak_tx.strong_count(), 1);
+    assert_eq!(rx.recv().await, Some(1));
+}
+
+// Tests that `WeakSender::try_send` reports `Closed` when no `Sender` exists.
+#[test]
+fn weak_sender_try_send_no_senders() {
+    let (tx, _rx) = channel::<i32>(1);
+    let weak_tx = tx.downgrade();
+    drop(tx);
+
+    assert!(matches!(
+        weak_tx.try_send(1),
+        Err(mpsc::error::TrySendError::Closed(1))
+    ));
+}
+
+// Tests that `WeakSender::try_send` reports `Closed` when the receiver has
+// been dropped even though a `Sender` still exists.
+#[test]
+fn weak_sender_try_send_rx_dropped() {
+    let (tx, rx) = channel::<i32>(1);
+    let weak_tx = tx.downgrade();
+    drop(rx);
+
+    assert!(matches!(
+        weak_tx.try_send(1),
+        Err(mpsc::error::TrySendError::Closed(1))
+    ));
+}
+
+// Tests that `WeakSender::try_send` reports `Full` when the channel has no
+// capacity.
+#[test]
+fn weak_sender_try_send_full() {
+    let (tx, _rx) = channel::<i32>(1);
+    let weak_tx = tx.downgrade();
+
+    assert!(weak_tx.try_send(1).is_ok());
+    assert!(matches!(
+        weak_tx.try_send(2),
+        Err(mpsc::error::TrySendError::Full(2))
+    ));
+}
+
+// Tests that `WeakUnboundedSender::send` sends while an `UnboundedSender` is
+// alive and does not affect the strong count afterwards.
+#[tokio::test]
+async fn weak_unbounded_sender_send_success() {
+    let (tx, mut rx) = unbounded_channel::<i32>();
+    let weak_tx = tx.downgrade();
+
+    assert!(weak_tx.send(1).is_ok());
+    assert_eq!(weak_tx.strong_count(), 1);
+    assert_eq!(rx.recv().await, Some(1));
+}
+
+// Tests that `WeakUnboundedSender::send` fails when no `UnboundedSender`
+// exists.
+#[test]
+fn weak_unbounded_sender_send_no_senders() {
+    let (tx, _rx) = unbounded_channel::<i32>();
+    let weak_tx = tx.downgrade();
+    drop(tx);
+
+    assert_eq!(weak_tx.send(1), Err(mpsc::error::SendError(1)));
+}
+
+// Tests that `WeakUnboundedSender::send` fails when the receiver has been
+// dropped even though an `UnboundedSender` still exists.
+#[test]
+fn weak_unbounded_sender_send_rx_dropped() {
+    let (tx, rx) = unbounded_channel::<i32>();
+    let weak_tx = tx.downgrade();
+    drop(rx);
+
+    assert_eq!(weak_tx.send(1), Err(mpsc::error::SendError(1)));
+}
+
+// Tests that `WeakSender::send` sends while a `Sender` is alive and does not
+// affect the strong count afterwards.
+#[tokio::test]
+async fn weak_sender_send_success() {
+    let (tx, mut rx) = channel::<i32>(1);
+    let weak_tx = tx.downgrade();
+
+    assert!(weak_tx.send(1).await.is_ok());
+    assert_eq!(weak_tx.strong_count(), 1);
+    assert_eq!(rx.recv().await, Some(1));
+}
+
+// Tests that `WeakSender::send` fails when no `Sender` exists.
+#[tokio::test]
+async fn weak_sender_send_no_senders() {
+    let (tx, _rx) = channel::<i32>(1);
+    let weak_tx = tx.downgrade();
+    drop(tx);
+
+    assert_eq!(weak_tx.send(1).await, Err(mpsc::error::SendError(1)));
+}
+
+// Tests that `WeakSender::send` fails when the receiver has been dropped even
+// though a `Sender` still exists.
+#[tokio::test]
+async fn weak_sender_send_rx_dropped() {
+    let (tx, rx) = channel::<i32>(1);
+    let weak_tx = tx.downgrade();
+    drop(rx);
+
+    assert_eq!(weak_tx.send(1).await, Err(mpsc::error::SendError(1)));
+}
+
+// Tests that `WeakSender::send` waits for capacity rather than failing, and
+// that the channel stays open while the send is pending even if the last
+// `Sender` is dropped in the meantime.
+#[tokio::test]
+async fn weak_sender_send_waits_for_capacity() {
+    let (tx, mut rx) = channel::<i32>(1);
+    let weak_tx = tx.downgrade();
+
+    tx.try_send(1).unwrap();
+
+    let send = tokio::spawn(async move { weak_tx.send(2).await });
+    tokio::task::yield_now().await;
+    assert!(!send.is_finished());
+
+    // Drop the last strong sender while the weak send is still pending.
+    drop(tx);
+
+    assert_eq!(rx.recv().await, Some(1));
+    assert!(send.await.unwrap().is_ok());
+    assert_eq!(rx.recv().await, Some(2));
+    assert_eq!(rx.recv().await, None);
+}

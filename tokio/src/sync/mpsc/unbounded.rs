@@ -20,9 +20,11 @@ pub struct UnboundedSender<T> {
 /// In order to send messages, the `WeakUnboundedSender` needs to be upgraded using
 /// [`WeakUnboundedSender::upgrade`], which returns `Option<UnboundedSender>`. It returns `None`
 /// if all `UnboundedSender`s have been dropped, and otherwise it returns an `UnboundedSender`.
+/// [`WeakUnboundedSender::send`] combines the upgrade and the send into a single call.
 ///
 /// [`UnboundedSender`]: UnboundedSender
 /// [`WeakUnboundedSender::upgrade`]: WeakUnboundedSender::upgrade
+/// [`WeakUnboundedSender::send`]: WeakUnboundedSender::send
 ///
 /// # Examples
 ///
@@ -706,6 +708,54 @@ impl<T> WeakUnboundedSender<T> {
     /// the channel wasn't previously dropped, otherwise `None` is returned.
     pub fn upgrade(&self) -> Option<UnboundedSender<T>> {
         chan::Tx::upgrade(self.chan.clone()).map(UnboundedSender::new)
+    }
+
+    /// Attempts to send a message on this `WeakUnboundedSender` without
+    /// blocking.
+    ///
+    /// This is a shorthand for [`upgrade`] followed by
+    /// [`UnboundedSender::send`] on the upgraded sender. Like that method, it
+    /// is not marked as `async` because sending a message to an unbounded
+    /// channel never requires any form of waiting.
+    ///
+    /// # Errors
+    ///
+    /// If all `UnboundedSender` instances have been dropped, the channel is
+    /// closed and the upgrade fails, so the function returns an error. It also
+    /// returns an error if the receive half of the channel is closed, either
+    /// due to [`close`] being called or the [`UnboundedReceiver`] having been
+    /// dropped. The error includes the value passed to `send`.
+    ///
+    /// [`upgrade`]: WeakUnboundedSender::upgrade
+    /// [`close`]: UnboundedReceiver::close
+    /// [`UnboundedReceiver`]: UnboundedReceiver
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tokio::sync::mpsc;
+    ///
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() {
+    /// let (tx, mut rx) = mpsc::unbounded_channel();
+    /// let tx_weak = tx.downgrade();
+    ///
+    /// // The strong sender is still alive, so this sends.
+    /// tx_weak.send(1).unwrap();
+    /// assert_eq!(rx.recv().await, Some(1));
+    ///
+    /// drop(tx);
+    ///
+    /// // All strong senders are gone, so the channel is closed.
+    /// assert!(tx_weak.send(2).is_err());
+    /// assert_eq!(rx.recv().await, None);
+    /// # }
+    /// ```
+    pub fn send(&self, message: T) -> Result<(), SendError<T>> {
+        match self.upgrade() {
+            Some(tx) => tx.send(message),
+            None => Err(SendError(message)),
+        }
     }
 
     /// Returns the number of [`UnboundedSender`] handles.
